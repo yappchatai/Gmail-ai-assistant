@@ -1,0 +1,248 @@
+// pages/index.js
+import React from 'react';
+import CheckoutButton from '../components/CheckoutButton';
+import EmailReplyForm from '../components/EmailReplyForm';
+
+export default function Home() {
+  return (
+    <div style={{ maxWidth: '800px', margin: 'auto', padding: '2rem' }}>
+      <h1>Gmail AI Assistant</h1>
+      <p>Paste the email content below and click "Generate Reply" to get an AI-powered response.</p>
+      <EmailReplyForm />
+      <hr style={{ margin: '2rem 0' }} />
+      <h2>Upgrade to Premium</h2>
+      <p>Subscribe to unlock unlimited replies and premium features.</p>
+      <CheckoutButton />
+    </div>
+  );
+}
+// pages/success.js
+import React from 'react';
+import Link from 'next/link';
+
+export default function Success() {
+  return (
+    <div style={{ maxWidth: '800px', margin: 'auto', padding: '2rem' }}>
+      <h1>Payment Successful!</h1>
+      <p>Thank you for upgrading to Premium. You can now use the AI assistant without limits.</p>
+      <Link href="/">← Back to Dashboard</Link>
+    </div>
+  );
+}
+// pages/cancel.js
+import React from 'react';
+import Link from 'next/link';
+
+export default function Cancel() {
+  return (
+    <div style={{ maxWidth: '800px', margin: 'auto', padding: '2rem' }}>
+      <h1>Payment Canceled</h1>
+      <p>Your payment was canceled. No charges were made.</p>
+      <Link href="/">← Return to Dashboard</Link>
+    </div>
+  );
+}
+// pages/api/create-checkout-session.js
+import Stripe from 'stripe';
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
+export default async function handler(req, res) {
+  if (req.method === 'POST') {
+    try {
+      // Create a new Stripe Checkout session
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [
+          {
+            // You can also use a predefined Price ID instead of price_data
+            price_data: {
+              currency: 'usd',
+              product_data: {
+                name: 'Gmail AI Assistant - Premium Subscription',
+              },
+              unit_amount: 500, // Amount in cents (e.g. $5.00)
+            },
+            quantity: 1,
+          },
+        ],
+        mode: 'payment',
+        success_url: `${req.headers.origin}/success`,
+        cancel_url: `${req.headers.origin}/cancel`,
+      });
+      res.status(200).json({ id: session.id });
+    } catch (err) {
+      console.error('Stripe Checkout Error:', err);
+      res.status(500).json({ error: 'Failed to create checkout session.' });
+    }
+  } else {
+    res.setHeader('Allow', 'POST');
+    res.status(405).end('Method Not Allowed');
+  }
+}
+// pages/api/generate-reply.js
+import { Configuration, OpenAIApi } from 'openai';
+
+const configuration = new Configuration({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+const openai = new OpenAIApi(configuration);
+
+export default async function handler(req, res) {
+  if (req.method === 'POST') {
+    const { emailContent } = req.body;
+    if (!emailContent) {
+      return res.status(400).json({ error: 'No email content provided.' });
+    }
+    try {
+      // Generate AI reply using OpenAI ChatCompletion
+      const completion = await openai.createChatCompletion({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'You are an AI assistant that helps reply to emails in a professional and concise manner.',
+          },
+          {
+            role: 'user',
+            content: `Reply to the following email:\n\n${emailContent}`,
+          },
+        ],
+      });
+      const reply = completion.data.choices[0].message.content;
+      res.status(200).json({ reply });
+    } catch (error) {
+      console.error('OpenAI Error:', error.response || error);
+      res
+        .status(500)
+        .json({ error: 'An error occurred while generating the reply.' });
+    }
+  } else {
+    res.setHeader('Allow', 'POST');
+    res.status(405).end('Method Not Allowed');
+  }
+}
+// components/CheckoutButton.js
+import { useState } from 'react';
+import { loadStripe } from '@stripe/stripe-js';
+
+const stripePromise = loadStripe(process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY);
+
+export default function CheckoutButton() {
+  const [loading, setLoading] = useState(false);
+
+  const handleCheckout = async () => {
+    setLoading(true);
+    try {
+      // Call the create-checkout-session API
+      const response = await fetch('/api/create-checkout-session', {
+        method: 'POST',
+      });
+      const data = await response.json();
+      const stripe = await stripePromise;
+      if (stripe && data.id) {
+        await stripe.redirectToCheckout({ sessionId: data.id });
+      } else {
+        setLoading(false);
+      }
+    } catch (error) {
+      console.error('Checkout Error:', error);
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button onClick={handleCheckout} disabled={loading}>
+      {loading ? 'Redirecting...' : 'Upgrade to Premium'}
+    </button>
+  );
+}
+// components/EmailReplyForm.js
+import { useState } from 'react';
+
+export default function EmailReplyForm() {
+  const [emailContent, setEmailContent] = useState('');
+  const [reply, setReply] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setReply('');
+    try {
+      const response = await fetch('/api/generate-reply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emailContent }),
+      });
+      const data = await response.json();
+      if (data.reply) {
+        setReply(data.reply);
+      } else {
+        setReply('No reply generated.');
+      }
+    } catch (error) {
+      console.error('Generate Reply Error:', error);
+      setReply('Failed to generate reply.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <label htmlFor="emailContent">Paste Email Here:</label>
+      <textarea
+        id="emailContent"
+        rows="6"
+        value={emailContent}
+        onChange={(e) => setEmailContent(e.target.value)}
+        placeholder="Enter the email content..."
+        style={{ width: '100%', margin: '0.5rem 0' }}
+        required
+      />
+      <button type="submit" disabled={!emailContent || loading}>
+        {loading ? 'Generating...' : 'Generate Reply'}
+      </button>
+      {reply && (
+        <div style={{ marginTop: '1rem' }}>
+          <h3>AI-generated Reply:</h3>
+          <pre style={{ whiteSpace: 'pre-wrap', background: '#f5f5f5', padding: '1rem' }}>
+            {reply}
+          </pre>
+        </div>
+      )}
+    </form>
+  );
+}
+# .env.local (Example)
+
+# Stripe (Publishable key exposed to frontend, Secret key for backend)
+NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_live_yourPublishableKeyHere
+STRIPE_SECRET_KEY=sk_live_yourSecretKeyHere
+
+# OpenAI API Key (for GPT model)
+OPENAI_API_KEY=sk-yourOpenAIKeyHere
+
+# Google OAuth (if you plan to integrate Gmail authentication)
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+{
+  "name": "gmail-ai-assistant",
+  "version": "1.0.0",
+  "dependencies": {
+    "next": "^13.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "stripe": "^12.0.0",
+    "@stripe/stripe-js": "^1.30.0",
+    "openai": "^3.0.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  }
+}
+npm run dev
